@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; img-src 'self' hbimg: data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'none'"
+  />
+  <title>黑盒社区</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="shim.js"></script>
+</head>
+<body>
+  <!-- ============ 自定义标题栏 ============ -->
+  <header class="titlebar">
+    <div class="tb-left">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18">
+          <rect x="2" y="4" width="20" height="16" rx="4" fill="currentColor" />
+          <circle cx="9" cy="12" r="1.6" fill="#14151a" />
+          <circle cx="15" cy="12" r="1.6" fill="#14151a" />
+        </svg>
+      </div>
+      <span class="app-name">黑盒社区</span>
+      <span class="tag-third">第三方客户端</span>
+    </div>
+
+    <div class="tb-center">
+      <div class="search">
+        <svg viewBox="0 0 24 24" width="15" height="15" class="ico">
+          <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2" />
+          <path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+        <input id="search-input" type="text" placeholder="搜索帖子、游戏、话题…" spellcheck="false" />
+        <kbd class="kbd-hint">Enter</kbd>
+      </div>
+    </div>
+
+    <div class="tb-right">
+      <button class="tb-btn" id="btn-refresh" title="刷新">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="tb-btn" id="btn-settings" title="设置">
+        <svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.2 5.2l2.1 2.1M16.7 16.7l2.1 2.1M18.8 5.2l-2.1 2.1M7.3 16.7l-2.1 2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <span class="dot-login" id="login-dot" hidden></span>
+      </button>
+      <div class="win-controls">
+        <button class="wc" id="win-min" title="最小化"><svg viewBox="0 0 12 12" width="11" height="11"><path d="M2 6h8" stroke="currentColor" stroke-width="1.2"/></svg></button>
+        <button class="wc" id="win-max" title="最大化"><svg viewBox="0 0 12 12" width="11" height="11"><rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></button>
+        <button class="wc wc-close" id="win-close" title="关闭"><svg viewBox="0 0 12 12" width="11" height="11"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.2"/></svg></button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============ 主体三栏 ============ -->
+  <div class="layout">
+    <aside class="sidebar">
+      <nav class="nav" id="nav">
+        <button class="nav-item active" data-view="feed">
+          <svg viewBox="0 0 24 24" width="17" height="17"><path d="M4 11l8-7 8 7v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+          <span>推荐</span>
+        </button>
+        <button class="nav-item" data-view="topics">
+          <svg viewBox="0 0 24 24" width="17" height="17"><rect x="3" y="3" width="8" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="3" width="8" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="3" y="13" width="8" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="13" y="13" width="8" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+          <span>全部社区</span>
+        </button>
+        <button class="nav-item" data-view="messages">
+          <svg viewBox="0 0 24 24" width="17" height="17"><path d="M4 5h16v11H8l-4 4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+          <span>我的消息</span>
+        </button>
+      </nav>
+
+      <div class="side-title">
+        <span>热门社区</span>
+        <span class="hot-badge">HOT</span>
+      </div>
+      <div class="topic-nav" id="topic-nav">
+        <div class="skeleton-side"></div>
+        <div class="skeleton-side"></div>
+        <div class="skeleton-side"></div>
+        <div class="skeleton-side"></div>
+      </div>
+    </aside>
+
+    <main class="content" id="content"></main>
+
+    <aside class="rail">
+      <div class="card status-card" id="account-card">
+        <div class="card-title">账号状态</div>
+        <div id="account-box">
+          <div class="skeleton-line"></div>
+          <div class="skeleton-line"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">热榜</div>
+        <div class="hot-list" id="hot-list">
+          <div class="skeleton-line"></div>
+          <div class="skeleton-line"></div>
+          <div class="skeleton-line"></div>
+          <div class="skeleton-line"></div>
+          <div class="skeleton-line"></div>
+        </div>
+      </div>
+
+      <div class="card about-card">
+        <div class="card-title">关于</div>
+        <p class="about-text">
+          本应用为社区爱好者开发的<strong>第三方非官方客户端</strong>，内容版权归小黑盒及原作者所有。
+          请勿用于商业用途，建议支持官方客户端。
+        </p>
+        <div class="about-meta" id="about-meta">—</div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ============ 扫码登录弹窗 ============ -->
+  <div class="modal-mask" id="login-modal" hidden>
+    <div class="modal login-modal">
+      <div class="modal-head">
+        <h3>扫码登录</h3>
+        <button class="modal-close" id="login-close">✕</button>
+      </div>
+      <div class="modal-body login-body">
+        <div class="qr-wrap">
+          <img id="qr-img" alt="登录二维码" />
+          <div class="qr-overlay" id="qr-overlay" hidden>
+            <span class="qr-overlay-text" id="qr-overlay-text"></span>
+            <button class="btn-primary" id="qr-refresh">刷新二维码</button>
+          </div>
+        </div>
+
+        <div class="qr-status" id="qr-status">
+          <span class="qr-dot" id="qr-dot"></span>
+          <span id="qr-status-text">正在生成二维码…</span>
+        </div>
+
+        <ol class="qr-steps">
+          <li>打开手机上的「小黑盒」App</li>
+          <li>点击右上角「扫一扫」</li>
+          <li>扫描二维码，并在手机上确认登录</li>
+        </ol>
+
+        <div class="qr-alt">
+          <button class="btn-ghost" id="qr-use-cookie">改用 Cookie 手动登录</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 设置弹窗 ============ -->
+  <div class="modal-mask" id="modal" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <h3>设置</h3>
+        <button class="modal-close" id="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <label class="field-label" for="cookie-input">小黑盒 Cookie</label>
+        <p class="field-hint">
+          用于解锁帖子详情、评论、搜索与消息。获取方式：浏览器登录
+          <code>xiaoheihe.cn</code> → F12 → Network → 任意请求 → 复制
+          <code>Cookie</code> 请求头，粘贴到下方。Cookie 仅保存在本机。
+        </p>
+        <textarea id="cookie-input" rows="6" placeholder="heybox_id=...; x_xhh_tokenid=...; user_pkey=..."></textarea>
+        <div class="modal-actions">
+          <button class="btn-ghost" id="btn-clear-cookie">清除</button>
+          <button class="btn-primary" id="btn-save-cookie">保存</button>
+        </div>
+        <div class="modal-tip" id="cookie-tip"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-wrap" id="toast-wrap"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

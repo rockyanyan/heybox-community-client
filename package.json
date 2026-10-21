@@ -1,0 +1,48 @@
+{
+  "name": "heybox-desktop",
+  "version": "1.0.0",
+  "description": "小黑盒社区第三方桌面客户端",
+  "main": "main.js",
+  "author": "HeyBox Third-Party Client",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "web": "node server.js",
+    "build": "electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.thirdparty.heybox",
+    "productName": "黑盒社区",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "renderer/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  }
+}
