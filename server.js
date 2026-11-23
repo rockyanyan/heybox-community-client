@@ -143,12 +143,12 @@ const server = http.createServer(async (req, res) => {
         heybox.configure({ cookie: r.cookie, heyboxId: r.heyboxId });
         heybox.resetCaptcha();
         let profile = r.profile || null;
-        let warn = '';
+        let warn = r.warning || '';
         try {
           const p = await heybox.getProfile();
-          if (p.ok) { profile = p.profile; saveCfg({ profile }); }
-          else warn = `登录态已保存，但校验未通过（${p.message || '未知原因'}），部分功能可能不可用`;
-        } catch (e) { warn = `登录态已保存，但资料拉取失败：${e.message}`; }
+          if (p.ok) { profile = p.profile; warn = ''; saveCfg({ profile }); }
+          else if (!warn) warn = `登录态已保存，但校验未通过（${p.message || '未知原因'}），部分功能可能不可用`;
+        } catch (e) { if (!warn) warn = `登录态已保存，但资料拉取失败：${e.message}`; }
         return json(res, 200, { ok: true, data: { state: 'succeeded', heyboxId: r.heyboxId, profile, warn } });
       }
       return json(res, 200, { ok: true, data: r });

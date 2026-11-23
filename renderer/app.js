@@ -669,12 +669,18 @@ function setQrStatus(text, cls = '') {
   if (t) t.textContent = text;
 }
 
-function showQrOverlay(text) {
+function showQrOverlay(text, detail) {
   const o = $('#qr-overlay');
   if (!o) return;
   o.hidden = false;
   const t = $('#qr-overlay-text');
   if (t) t.textContent = text;
+  // 诊断信息单独放在遮罩下方的小字里，不要糊在二维码上
+  const d = $('#qr-detail');
+  if (d) {
+    d.textContent = detail ? String(detail).slice(0, 400) : '';
+    d.hidden = !detail;
+  }
 }
 
 function stopQrTimers() {
@@ -797,12 +803,10 @@ async function pollQr() {
       setQrStatus(d.message || '二维码已失效', 'err');
       showQrOverlay((d.message || '二维码已失效') + '，请刷新后重试');
       break;
-
     default: {
       stopQrTimers();
-      const extra = d.detail ? `\n诊断：${d.detail}` : '';
       setQrStatus(d.message || '登录失败', 'err');
-      showQrOverlay((d.message || '登录失败，请刷新重试') + extra);
+      showQrOverlay(d.message || '登录失败，请刷新重试', d.detail);
     }
   }
 }
@@ -960,5 +964,7 @@ async function boot() {
 window.openSettings = openSettings;
 window.openLogin = openLogin;
 window.openOriginal = openOriginal;
+// 供自动化测试直接驱动二维码失败态
+window.__showQrOverlayForTest = showQrOverlay;
 
 boot();

@@ -536,25 +536,44 @@ async function pollQrLogin(token) {
 
   if (flag === 'ok') {
     const prof = extractProfile(r);
-    const pkey = String(r.pkey || r.user_pkey || '').trim();
-    if (!prof.heyboxId || !pkey) {
+
+    // pkey 不保证出现在 result 顶层：上游会把它放在 Set-Cookie / 会话 Cookie 罐里，
+    // 有些账号（如走新版风控的）干脆只下发 heybox_id + 资料。
+    // 因此先按 result -> Cookie 罐 -> Set-Cookie 的顺序找，找不到也不阻断登录。
+    const fromJar = (name) => {
+      const hit = qrCookieJar.find((c) => c.startsWith(name + '='));
+      return hit ? hit.slice(name.length + 1) : '';
+    };
+    const pkey =
+      String(r.pkey || r.user_pkey || '').trim() ||
+      fromJar('pkey') ||
+      fromJar('user_pkey');
+
+    // 只要拿到 heybox_id 就算登录成功（账号身份已经确认）；
+    // 缺失 pkey 时记录提示，交给后续 restore_login 判定真实可用性。
+    if (!prof.heyboxId) {
       return {
         state: 'error',
-        message: '登录响应缺少登录态字段，请重试或改用 Cookie 登录',
-        detail: `heybox_id="${prof.heyboxId}" pkey="${pkey ? '(有)' : '(无)'}" result=${JSON.stringify(r).slice(0, 300)}`,
+        message: '登录响应缺少用户标识，请重试或改用 Cookie 登录',
+        detail: `result=${JSON.stringify(r).slice(0, 400)}`,
       };
     }
+
+    const cookie = buildLoginCookie({
+      heyboxId: prof.heyboxId,
+      pkey,
+      xXhh: String(r.x_xhh_heyboxid || '').trim(),
+      setCookie: res.setCookie,
+    });
+
     return {
       state: 'succeeded',
       heyboxId: prof.heyboxId,
       pkey,
       profile: prof,
-      cookie: buildLoginCookie({
-        heyboxId: prof.heyboxId,
-        pkey,
-        xXhh: String(r.x_xhh_heyboxid || '').trim(),
-        setCookie: res.setCookie,
-      }),
+      cookie,
+      // pkey 缺失时下游用 restore_login 兜底校验，这里只做提示不阻断
+      warning: pkey ? '' : 'pkey 未随扫码响应下发，已用会话 Cookie 兜底；若功能受限请改用 Cookie 登录',
     };
   }
 

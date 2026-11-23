@@ -49,6 +49,20 @@ const check = (name, cond, extra) => {
   check('会话 Cookie 被保留', /sessionid=abc/.test(cookie));
   check('核心字段覆盖同名旧值', !/pkey=OLD/.test(cookie));
 
+  console.log('\n=== 3b) pkey 缺失（新版风控账号，只有 heybox_id + account_detail） ===');
+  // 真实遇到的情况：result 里没有 pkey，只有 heybox_id 和完整资料
+  const noPkey = {
+    error: 'ok',
+    heybox_id: '44792041',
+    account_detail: { userid: '44792041', username: 'Yan_()', level_info: { level: 14 } },
+  };
+  const p2 = heybox.extractProfile(noPkey);
+  check('仍能提取用户标识', p2.heyboxId === '44792041' && p2.nickname === 'Yan_()', p2);
+  const cookie2 = heybox.buildLoginCookie({ heyboxId: p2.heyboxId, pkey: '', setCookie: ['sessionid=xyz'] });
+  check('pkey 缺失仍能组装出可用 Cookie',
+    /heybox_id=44792041/.test(cookie2) && /sessionid=xyz/.test(cookie2) && !/pkey=/.test(cookie2),
+    cookie2);
+
   console.log('\n=== 4) 未登录时 getProfile ===');
   const gp = await heybox.getProfile();
   check('优雅返回 needLogin', gp.ok === false, gp);

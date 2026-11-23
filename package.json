@@ -1,6 +1,6 @@
 {
   "name": "heybox-desktop",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "小黑盒社区第三方桌面客户端",
   "main": "main.js",
   "author": "HeyBox Third-Party Client",

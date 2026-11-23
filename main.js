@@ -199,17 +199,18 @@ function setupIpc() {
 
     // 用登录态立即验证 + 拉取最新资料；失败不影响登录，但把原因带给 UI
     let profile = r.profile || null;
-    let warn = '';
+    let warn = r.warning || '';
     try {
       const p = await heybox.getProfile();
       if (p.ok) {
         profile = p.profile;
+        warn = '';                      // 校验通过就以校验结果为准，忽略 pkey 提示
         saveConfig({ profile });
-      } else {
+      } else if (!warn) {
         warn = `登录态已保存，但校验未通过（${p.message || '未知原因'}），部分功能可能不可用`;
       }
     } catch (e) {
-      warn = `登录态已保存，但资料拉取失败：${e.message}`;
+      if (!warn) warn = `登录态已保存，但资料拉取失败：${e.message}`;
     }
     return { state: 'succeeded', heyboxId: r.heyboxId, profile, warn };
   });
