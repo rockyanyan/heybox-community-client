@@ -7,9 +7,13 @@
  *  - preload 暴露的 API 与主进程通道一一对应
  */
 const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
 const Module = require('node:module');
 
 const ROOT = path.join(__dirname, '..');
+// 配置写到临时目录，避免污染工作区
+const USERDATA = fs.mkdtempSync(path.join(os.tmpdir(), 'heybox-userdata-'));
 const handlers = new Map();
 const protocolHandlers = new Map();
 const registeredSchemes = [];
@@ -38,7 +42,7 @@ class FakeBrowserWindow {
 const fakeElectron = {
   app: {
     disableHardwareAcceleration() {},
-    getPath: () => path.join(ROOT, '.test-userdata'),
+    getPath: () => USERDATA,
     getVersion: () => '1.1.0',
     whenReady: () => Promise.resolve(),
     on() {},
@@ -169,5 +173,6 @@ const check = (name, cond, extra) => {
 
   console.log(`\n== 结果：${failed === 0 ? '全部通过' : failed + ' 项失败'} ==`);
   Module._load = origLoad;
+  try { fs.rmSync(USERDATA, { recursive: true, force: true }); } catch { /* ignore */ }
   process.exit(failed === 0 ? 0 : 1);
 })();

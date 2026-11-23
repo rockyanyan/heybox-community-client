@@ -3,3 +3,7 @@ dist/
 *.log
 .DS_Store
 .probe/
+
+# 本地运行产物 / 测试残留
+.dev-config.json
+.test-userdata/
