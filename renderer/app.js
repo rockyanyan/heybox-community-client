@@ -1,6 +1,11 @@
 'use strict';
 /**
  * 渲染进程逻辑：视图路由、数据加载、DOM 渲染
+ *
+ * 分页要点（实测）：
+ *  - /bbs/app/feeds 每页固定 10 条，limit 参数无效 -> offset 必须按「实际返回条数」推进
+ *  - /bbs/app/topic/feeds 每页约 20 条
+ *  - pull=1 的推荐流会出现重复条目 -> 按 linkid 去重
  */
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -10,9 +15,12 @@ const state = {
   view: 'feed',
   topics: [],          // 热门社区列表
   currentTopic: null,  // 当前板块
-  feed: { offset: 0, loading: false, done: false, items: [] },
+  sortType: 0,
+  feed: { offset: 0, loading: false, done: false, items: [], seen: new Set() },
   searching: false,
   hasCookie: false,
+  profile: null,
+  captchaCooldownMs: 0,
 };
 
 /* ==================== 工具函数 ==================== */
@@ -52,23 +60,28 @@ function toast(msg, type = '') {
     el.style.opacity = '0';
     el.style.transition = 'opacity .3s';
     setTimeout(() => el.remove(), 320);
-  }, 2200);
+  }, 2400);
 }
 
 const IMG_PLACEHOLDER =
   'data:image/svg+xml;charset=utf-8,' +
   encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80"><rect width="120" height="80" fill="#2b2f38"/></svg>`
+    '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80"><rect width="120" height="80" fill="#2b2f38"/></svg>'
   );
 
 const img = (u) => (u ? window.heybox.img(u) : IMG_PLACEHOLDER);
 
+/** 分享链接里的 link_id 有时是 base64 串，统一还原成数字 id */
+function postUrl(link) {
+  if (link && link.share_url) return link.share_url;
+  return link && link.linkid ? `https://www.xiaoheihe.cn/app/bbs/link/${link.linkid}` : '';
+}
+
 /* ==================== 图标 ==================== */
 const ICON = {
-  up: `<svg viewBox="0 0 24 24" width="14" height="14"><path d="M7 21V10l5-7 1 1v6h5.2a2 2 0 0 1 2 2.4l-1.3 6A2 2 0 0 1 16.9 21z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>`,
-  comment: `<svg viewBox="0 0 24 24" width="14" height="14"><path d="M4 5h16v11H8l-4 4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>`,
-  award: `<svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 3l2.6 5.6 6 .8-4.4 4.2 1.1 6L12 16.9 6.7 19.6l1.1-6L3.4 9.4l6-.8z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>`,
-  play: `<svg viewBox="0 0 24 24" width="13" height="13"><path d="M7 4l12 8-12 8z" fill="currentColor"/></svg>`,
+  comment: '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M4 5h16v11H8l-4 4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
+  award: '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 3l2.6 5.6 6 .8-4.4 4.2 1.1 6L12 16.9 6.7 19.6l1.1-6L3.4 9.4l6-.8z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+  play: '<svg viewBox="0 0 24 24" width="13" height="13"><path d="M7 4l12 8-12 8z" fill="currentColor"/></svg>',
 };
 
 /* ==================== 帖子卡片 ==================== */
@@ -77,7 +90,7 @@ function postCardHTML(link) {
   const user = link.user || {};
   const imgs = (link.imgs || []).filter(Boolean);
   const topics = (link.topics || []).slice(0, 4);
-  const lv = user.level_info?.level;
+  const lv = user.level_info && user.level_info.level;
 
   const single = imgs.length === 1;
   const media = single
@@ -95,7 +108,7 @@ function postCardHTML(link) {
   <article class="post-card" data-link="${esc(link.linkid)}">
     <div class="post-main">
       <div class="post-author">
-        ${user.avatar ? `<img src="${esc(img(user.avatar))}" onerror="this.style.visibility='hidden'" />` : ''}
+        ${user.avatar || user.avartar ? `<img src="${esc(img(user.avatar || user.avartar))}" onerror="this.style.visibility='hidden'" />` : ''}
         <span>${esc(user.username || '匿名用户')}</span>
         ${lv ? `<span class="lv">Lv.${esc(lv)}</span>` : ''}
       </div>
@@ -120,13 +133,39 @@ function postCardHTML(link) {
   </article>`;
 }
 
+function stateBox(emoji, title, desc, actionHTML = '') {
+  return `<div class="state-box"><div style="font-size:30px">${emoji}</div><h4>${esc(title)}</h4><p>${desc}</p>${actionHTML}</div>`;
+}
+
+/** 需要登录 / 被风控时的统一提示 */
+function loginBox(payload, fallbackTitle) {
+  const captcha = payload && payload.status === 'show_captcha';
+  const cooldown = payload && payload.status === 'captcha_cooldown';
+  const title = captcha || cooldown ? '触发了人机验证' : fallbackTitle || '需要登录';
+  const desc = cooldown
+    ? esc((payload && payload.msg) || '站点要求人机验证，请求已暂停一段时间。')
+    : captcha
+      ? '小黑盒对该接口的风控很严，匿名请求会返回 show_captcha。请先在浏览器登录 xiaoheihe.cn 并完成一次人机验证，再把 Cookie 粘贴到设置里。'
+      : '该接口要求登录态，请在设置中填入小黑盒 Cookie 后重试。';
+  return stateBox(
+    captcha || cooldown ? '🛡️' : '🔐',
+    title,
+    desc,
+    '<button class="btn-primary" onclick="openSettings()">填入 Cookie</button>'
+  );
+}
+
 /* ==================== 视图：推荐流 / 板块 ==================== */
 
 async function loadFeed({ reset = false, topic = null } = {}) {
   const f = state.feed;
   if (f.loading) return;
   if (reset) {
-    f.offset = 0; f.done = false; f.items = [];
+    f.offset = 0;
+    f.done = false;
+    f.items = [];
+    f.seen = new Set();
+    f.pages = 0;
     $('#content').innerHTML =
       `<div class="content-head"><div class="content-title">${
         topic ? `<span>#${esc(topic.name)}</span><span class="sub">板块</span>` : '推荐'
@@ -138,9 +177,13 @@ async function loadFeed({ reset = false, topic = null } = {}) {
   const limit = 20;
 
   let res;
-  if (topic) res = await window.heybox.api.topicFeeds(topic.topic_id, f.offset, limit, state.sortType || 0);
-  else res = await window.heybox.api.feeds(f.offset, limit, 1);
-
+  try {
+    res = topic
+      ? await window.heybox.api.topicFeeds(topic.topic_id, f.offset, limit, state.sortType || 0)
+      : await window.heybox.api.feeds(f.offset, limit, 0);
+  } catch (e) {
+    res = { ok: false, error: e.message };
+  }
   f.loading = false;
 
   const listEl = $('#feed-list');
@@ -152,39 +195,67 @@ async function loadFeed({ reset = false, topic = null } = {}) {
 
   if (!payload || !payload.ok) {
     if (f.offset === 0) {
-      listEl.innerHTML = stateBox(
-        '😕',
-        '内容加载失败',
-        payload
-          ? `接口返回：${esc(payload.msg || payload.status)}。可以尝试点击右上角刷新，或稍后重试。`
-          : '无法连接到小黑盒服务器，请检查网络后重试。'
-      );
+      if (payload && (payload.needLogin || payload.status === 'captcha_cooldown')) {
+        listEl.innerHTML = loginBox(payload, '内容加载失败');
+      } else {
+        listEl.innerHTML = stateBox(
+          '😕',
+          '内容加载失败',
+          payload
+            ? `接口返回：${esc(payload.msg || payload.status)}。可以尝试点击右上角刷新，或稍后重试。`
+            : `无法连接到小黑盒服务器，请检查网络后重试。${res && res.error ? '（' + esc(res.error) + '）' : ''}`
+        );
+      }
     }
     f.done = true;
     return;
   }
 
-  const links = (payload.result && payload.result.links) || [];
-  if (!links.length) {
-    if (f.offset === 0) listEl.innerHTML = stateBox('📭', '暂无内容', '这个板块暂时没有帖子。');
+  // 服务端每页条数是固定的（推荐流固定 10，板块约 20），limit 参数不生效，
+  // 所以 offset 必须按「实际返回条数」推进；pull=1 时可能出现重复条目，按 linkid 去重。
+  const raw = (payload.result && payload.result.links) || [];
+  const fresh = raw.filter((l) => l && l.linkid != null && !f.seen.has(String(l.linkid)));
+  for (const l of fresh) f.seen.add(String(l.linkid));
+
+  f.offset += raw.length;
+
+  if (!raw.length) {
+    if (!f.items.length) listEl.innerHTML = stateBox('📭', '暂无内容', '这个板块暂时没有帖子。');
     f.done = true;
     return;
   }
 
-  f.items.push(...links);
-  f.offset += links.length;
-  if (links.length < limit) f.done = true;
+  if (!fresh.length) {
+    // 整页都是重复内容：直接往后翻一页，不要给用户看空列表（最多连翻 5 页防死循环）
+    f.pages = (f.pages || 0) + 1;
+    if (f.pages > 5) {
+      f.done = true;
+      return;
+    }
+    return loadFeed({ topic });
+  }
+  f.pages = 0;
 
-  listEl.insertAdjacentHTML('beforeend', links.map(postCardHTML).join(''));
+  f.items.push(...fresh);
+
+  // 推荐流是「无限」的，给一个上限，避免一直滚下去耗尽内存
+  if (f.items.length >= 200) f.done = true;
+
+  listEl.insertAdjacentHTML('beforeend', fresh.map(postCardHTML).join(''));
 
   // 触底加载
   if (!f.done) {
+    const old = $('#feed-sentinel');
+    if (old) old.remove();
     const sentinel = document.createElement('div');
     sentinel.className = 'load-more';
     sentinel.id = 'feed-sentinel';
-    sentinel.innerHTML = `<div class="spinner"></div>`;
+    sentinel.innerHTML = '<div class="spinner"></div>';
     listEl.appendChild(sentinel);
     observeSentinel();
+  } else {
+    const old = $('#feed-sentinel');
+    if (old) old.remove();
   }
 }
 
@@ -193,23 +264,24 @@ function observeSentinel() {
   if (sentinelObserver) sentinelObserver.disconnect();
   const el = $('#feed-sentinel');
   if (!el) return;
-  sentinelObserver = new IntersectionObserver((entries) => {
-    if (entries[0].isIntersecting) {
-      sentinelObserver.disconnect();
-      el.remove();
-      loadFeed({ topic: state.currentTopic });
-    }
-  }, { root: $('#content'), rootMargin: '260px' });
+  sentinelObserver = new IntersectionObserver(
+    (entries) => {
+      if (entries[0].isIntersecting) {
+        sentinelObserver.disconnect();
+        el.remove();
+        loadFeed({ topic: state.currentTopic });
+      }
+    },
+    { root: $('#content'), rootMargin: '320px' }
+  );
   sentinelObserver.observe(el);
-}
-
-function stateBox(emoji, title, desc, actionHTML = '') {
-  return `<div class="state-box"><div style="font-size:30px">${emoji}</div><h4>${esc(title)}</h4><p>${desc}</p>${actionHTML}</div>`;
 }
 
 /* ==================== 视图：全部社区 ==================== */
 
 function renderTopicsView() {
+  state.view = 'topics';
+  setActiveNav('topics');
   $('#content').innerHTML = `
     <div class="content-head">
       <div class="content-title">全部社区 <span class="sub">共 ${state.topics.length} 个热门板块</span></div>
@@ -223,7 +295,7 @@ function renderTopicsView() {
       <img src="${esc(img(t.pic_url || t.small_pic_url))}" style="width:38px;height:38px;border-radius:9px;object-fit:cover;background:var(--surface-3)" onerror="this.style.visibility='hidden'"/>
       <div style="flex:1;min-width:0">
         <div class="post-title" style="font-size:13.5px;-webkit-line-clamp:1">${esc(t.name)}</div>
-        <div class="post-desc" style="font-size:11.5px">热度 ${fmtNum(Math.round(t.hot_value_v2 || 0))}</div>
+        <div class="post-desc" style="font-size:11.5px">热度 ${fmtNum(Math.round((t.hot && t.hot.raw_hot_value) || t.hot_value_v2 || 0))}</div>
       </div>
     </div>`
     )
@@ -233,45 +305,51 @@ function renderTopicsView() {
 /* ==================== 视图：搜索 ==================== */
 
 async function doSearch(q) {
-  if (!q.trim()) return;
+  const keyword = String(q || '').trim();
+  if (!keyword) return;
   state.view = 'search';
+  state.currentTopic = null;
   setActiveNav(null);
   $('#content').innerHTML = `
-    <div class="content-head"><div class="content-title">搜索 <span class="sub">“${esc(q)}”</span></div></div>
+    <div class="content-head"><div class="content-title">搜索 <span class="sub">“${esc(keyword)}”</span></div></div>
     <div id="feed-list" class="post-list"><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div></div>`;
 
-  const res = await window.heybox.api.search(q, 0, 20);
+  const res = await window.heybox.api.search(keyword, 'link', 0, 20);
   const listEl = $('#feed-list');
+  if (!listEl) return;
   const payload = res && res.ok ? res.data : null;
 
   if (!payload || !payload.ok) {
-    const needLogin = payload && payload.needLogin;
-    listEl.innerHTML = stateBox(
-      needLogin ? '🔐' : '😕',
-      needLogin ? '搜索需要登录' : '搜索失败',
-      needLogin
-        ? '小黑盒的搜索接口要求登录态。请在右上角设置中填入 Cookie 后再试。'
-        : esc((payload && payload.msg) || '请稍后重试。'),
-      needLogin ? `<button class="btn-primary" onclick="openSettings()">填入 Cookie</button>` : ''
-    );
+    if (payload && (payload.needLogin || payload.status === 'captcha_cooldown')) {
+      listEl.innerHTML = loginBox(payload, '搜索需要登录');
+    } else {
+      listEl.innerHTML = stateBox('😕', '搜索失败', esc((payload && payload.msg) || '请稍后重试。'));
+    }
     return;
   }
 
-  const links =
-    (payload.result && (payload.result.links || payload.result.list || payload.result.items)) || [];
+  const links = (payload.result && (payload.result.links || payload.result.list || payload.result.items)) || [];
   if (!links.length) {
     listEl.innerHTML = stateBox('🔍', '没有找到相关内容', '换个关键词试试吧。');
     return;
   }
-  listEl.innerHTML = links.map(postCardHTML).join('');
+  // 搜索结果不进入 feed 缓存，但详情页打开时需要能取到标题，这里单独存一份
+  state.searchResults = links.filter((x) => x && x.linkid != null);
+  listEl.innerHTML = links.map((l) => (l.type ? postCardHTML(l.info || {}) : postCardHTML(l))).join('');
 }
 
 /* ==================== 视图：帖子详情 ==================== */
 
 async function openDetail(linkId) {
-  const link = state.feed.items.find((x) => String(x.linkid) === String(linkId));
+  const pools = [state.feed.items, state.searchResults || []];
+  let link = null;
+  for (const pool of pools) {
+    link = pool.find((x) => String(x.linkid) === String(linkId));
+    if (link) break;
+  }
   state.view = 'detail';
   setActiveNav(null);
+  state.currentLink = link || null;
 
   const c = $('#content');
   c.innerHTML = `
@@ -284,7 +362,7 @@ async function openDetail(linkId) {
       }</div>
       ${
         link && (link.imgs || []).length
-          ? `<div style="margin-top:14px">${link.imgs
+          ? `<div style="margin-top:14px" id="detail-imgs">${link.imgs
               .map((u) => `<img src="${esc(img(u))}" style="max-width:100%;border-radius:9px;margin:6px 0;display:block" onerror="this.style.display='none'"/>`)
               .join('')}</div>`
           : ''
@@ -295,7 +373,7 @@ async function openDetail(linkId) {
   c.scrollTop = 0;
 
   // 拉取详情/评论
-  const res = await window.heybox.api.linkTree(linkId, 0, 20);
+  const res = await window.heybox.api.linkTree(linkId, 1, 20, 1, 0);
   const payload = res && res.ok ? res.data : null;
   const box = $('#detail-comments');
   if (!box) return;
@@ -305,15 +383,21 @@ async function openDetail(linkId) {
       <div class="comment-sec">
         <div class="detail-lock">
           <div class="lock-ico"><svg viewBox="0 0 24 24" width="34" height="34"><rect x="4" y="10" width="16" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8 10V7a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></div>
-          <h4>${payload && payload.needLogin ? '查看完整内容与评论需要登录' : '详情加载失败'}</h4>
-          <p style="max-width:400px;line-height:1.7">${
-            payload && payload.needLogin
-              ? '小黑盒的帖子详情与评论接口要求登录态（未登录会触发人机校验）。请在设置中填入 Cookie 后刷新本页。'
-              : esc((payload && payload.msg) || '请稍后重试。')
+          <h4>${payload && (payload.needLogin || payload.status === 'show_captcha') ? '查看完整内容与评论需要登录' : '详情加载失败'}</h4>
+          <p style="max-width:420px;line-height:1.7">${
+            payload && payload.status === 'captcha_cooldown'
+              ? esc(payload.msg || '站点风控冷却中，请稍后再试。')
+              : payload && (payload.needLogin || payload.status === 'show_captcha')
+                ? '小黑盒的帖子详情与评论接口要求登录态（未登录会触发人机校验）。请在设置中填入 Cookie 后刷新本页。'
+                : esc((payload && payload.msg) || '请稍后重试。')
           }</p>
-          <div style="display:flex;gap:9px">
-            ${payload && payload.needLogin ? `<button class="btn-primary" onclick="openSettings()">填入 Cookie</button>` : ''}
-            ${link ? `<button class="btn-ghost" onclick="openOriginal('${esc(link.share_url || '')}')">在浏览器中打开原文</button>` : ''}
+          <div style="display:flex;gap:9px;flex-wrap:wrap;justify-content:center">
+            ${
+              payload && (payload.needLogin || payload.status === 'show_captcha')
+                ? '<button class="btn-primary" onclick="openSettings()">填入 Cookie</button>'
+                : ''
+            }
+            <button class="btn-ghost" onclick="openOriginal('${esc(postUrl(link))}')">在浏览器中打开原文</button>
           </div>
         </div>
       </div>`;
@@ -324,7 +408,7 @@ async function openDetail(linkId) {
   const linkData = r.link || {};
   const comments = r.comments || [];
 
-  // 从搜索结果等入口进入时，列表里没有该帖信息，用详情接口补全标题与作者
+  // 从搜索结果等入口进入时，列表里没缓存该帖信息，用详情补全标题与作者
   if (!link && linkData.title) {
     const head = $('.detail-wrap');
     if (head) {
@@ -335,54 +419,77 @@ async function openDetail(linkId) {
     }
   }
 
-  // 若列表页没有正文，用详情补全
-  if (linkData.description) {
+  // 正文：text 已被主进程拍平成纯文本
+  if (linkData.text) {
     const body = $('#detail-body');
-    if (body) body.textContent = linkData.description;
+    if (body) {
+      body.textContent = linkData.text;
+      body.style.whiteSpace = 'pre-wrap';
+    }
   }
 
+  // 详情接口带回的图片比列表更全
+  const detailImgs = linkData.images || [];
+  if (detailImgs.length) {
+    const holder = $('#detail-imgs');
+    const html = detailImgs
+      .map((u) => `<img src="${esc(img(u))}" style="max-width:100%;border-radius:9px;margin:6px 0;display:block" onerror="this.style.display='none'"/>`)
+      .join('');
+    if (holder) holder.innerHTML = html;
+    else $('#detail-body') && $('#detail-body').insertAdjacentHTML('afterend', `<div id="detail-imgs">${html}</div>`);
+  }
+
+  const total = r.totalFloorNum || comments.length;
   box.innerHTML = `
     <div class="comment-sec">
-      <h4>评论 ${comments.length ? `<span style="color:var(--text-3);font-weight:400">${fmtNum(linkData.comment_num || comments.length)}</span>` : ''}</h4>
+      <h4>评论 ${total ? `<span style="color:var(--text-3);font-weight:400">${fmtNum(total)}</span>` : ''}</h4>
       ${
         comments.length
           ? comments.map(commentHTML).join('')
           : '<div style="color:var(--text-3);font-size:12.5px;padding:14px 0">暂无评论</div>'
       }
+      ${r.hasMoreFloors ? '<div class="load-more" style="font-size:12px">还有更多楼层，请到官方页面查看完整评论</div>' : ''}
     </div>`;
 }
 
 function detailAuthorHTML(link) {
   const u = link.user || {};
   return `<div class="detail-author">
-    ${u.avatar ? `<img src="${esc(img(u.avatar))}" onerror="this.style.visibility='hidden'"/>` : ''}
+    ${u.avatar || u.avartar ? `<img src="${esc(img(u.avatar || u.avartar))}" onerror="this.style.visibility='hidden'"/>` : ''}
     <div>
-      <div class="a-name">${esc(u.username || '匿名用户')}${u.level_info?.level ? ` <span class="lv">Lv.${esc(u.level_info.level)}</span>` : ''}</div>
+      <div class="a-name">${esc(u.username || '匿名用户')}${u.level_info && u.level_info.level ? ` <span class="lv">Lv.${esc(u.level_info.level)}</span>` : ''}</div>
       <div class="a-sub">${fmtTime(link.create_at)} · 👍 ${fmtNum(link.link_award_num)} · 💬 ${fmtNum(link.comment_num)}</div>
     </div>
   </div>`;
 }
 
-function commentHTML(c) {
+function commentHTML(c, depth = 0) {
   const u = c.user || {};
-  const subs = c.comments || c.sub_comments || [];
-  return `<div class="comment">
-    ${u.avatar ? `<img class="c-avatar" src="${esc(img(u.avatar))}" onerror="this.style.visibility='hidden'"/>` : '<div class="c-avatar"></div>'}
+  const subs = c.sub_comments || [];
+  return `<div class="comment${depth ? ' comment-child' : ''}">
+    ${u.avatar || u.avartar ? `<img class="c-avatar" src="${esc(img(u.avatar || u.avartar))}" onerror="this.style.visibility='hidden'"/>` : '<div class="c-avatar"></div>'}
     <div class="comment-body">
-      <div class="comment-name">${esc(u.username || '匿名用户')}</div>
-      <div class="comment-text">${esc(c.text || c.content || '')}</div>
+      <div class="comment-name">${esc(u.username || '匿名用户')}${c.is_link_owner ? ' <span class="lv">楼主</span>' : ''}</div>
+      <div class="comment-text">${esc(c.text || '')}</div>
       <div class="comment-foot">
         <span>${fmtTime(c.create_at)}</span>
         ${c.up ? `<span>👍 ${esc(c.up)}</span>` : ''}
+        ${c.child_num ? `<span>${esc(c.child_num)} 条回复</span>` : ''}
       </div>
-      ${subs.length ? `<div class="comment-sub">${subs.map(commentHTML).join('')}</div>` : ''}
+      ${subs.length ? `<div class="comment-sub">${subs.map((s) => commentHTML(s, depth + 1)).join('')}</div>` : ''}
     </div>
   </div>`;
 }
 
 function goBack() {
-  if (state.currentTopic) { state.view = 'topic'; loadFeed({ reset: true, topic: state.currentTopic }); }
-  else { state.view = 'feed'; state.currentTopic = null; loadFeed({ reset: true }); }
+  if (state.currentTopic) {
+    state.view = 'topic';
+    loadFeed({ reset: true, topic: state.currentTopic });
+  } else {
+    state.view = 'feed';
+    state.currentTopic = null;
+    loadFeed({ reset: true });
+  }
   setActiveNav(state.view === 'feed' ? 'feed' : null);
 }
 
@@ -395,33 +502,59 @@ function openOriginal(url) {
 
 async function renderMessages() {
   state.view = 'messages';
+  state.currentTopic = null;
   setActiveNav('messages');
   $('#content').innerHTML = `
     <div class="content-head"><div class="content-title">我的消息</div></div>
     <div id="msg-box"><div class="skeleton-card"></div></div>`;
-  const res = await window.heybox.api.raw('/bbs/app/user/message', {});
+  const res = await window.heybox.api.messages(0, 0, 20);
   const payload = res && res.ok ? res.data : null;
   const box = $('#msg-box');
+  if (!box) return;
+
   if (!payload || !payload.ok) {
-    box.innerHTML = stateBox(
-      '🔐',
-      '消息中心需要登录',
-      '请在设置中填入小黑盒 Cookie，即可在这里查看回复、点赞与系统通知。',
-      `<button class="btn-primary" onclick="openSettings()">填入 Cookie</button>`
-    );
+    box.innerHTML = loginBox(payload, '消息中心需要登录');
     return;
   }
-  box.innerHTML = `<div class="detail-wrap"><pre style="white-space:pre-wrap;font-size:12px;color:var(--text-2);margin:0">${esc(
-    JSON.stringify(payload.result, null, 2)
-  )}</pre></div>`;
+
+  const r = payload.result || {};
+  const messages = r.messages || [];
+  const unread = Number(r.message_unread_num) || 0;
+
+  if (!messages.length) {
+    box.innerHTML = r.anonymous
+      ? stateBox(
+          '🔐',
+          '消息中心需要登录',
+          '未登录时该接口不会报错，只会返回空列表。请在设置中填入小黑盒 Cookie，即可查看回复、点赞与系统通知。',
+          '<button class="btn-primary" onclick="openSettings()">填入 Cookie</button>'
+        )
+      : stateBox('📭', '暂无新消息', unread ? `有 ${unread} 条未读，稍后再刷新看看。` : '还没有收到回复、点赞或系统通知。');
+    return;
+  }
+
+  box.innerHTML = `<div class="detail-wrap">${messages.map(messageHTML).join('')}</div>`;
+}
+
+function messageHTML(m) {
+  const u = m.user_a || m.user || {};
+  const text = m.text || m.content || m.title || '';
+  return `<div class="comment">
+    ${u.avartar || u.avatar ? `<img class="c-avatar" src="${esc(img(u.avartar || u.avatar))}" onerror="this.style.visibility='hidden'"/>` : '<div class="c-avatar"></div>'}
+    <div class="comment-body">
+      <div class="comment-name">${esc(u.username || m.entry || '通知')}</div>
+      <div class="comment-text">${esc(text)}</div>
+      <div class="comment-foot"><span>${fmtTime(m.timestamp || m.create_at)}</span></div>
+    </div>
+  </div>`;
 }
 
 /* ==================== 导航 / 侧栏 ==================== */
 
 function setActiveNav(view) {
   $$('.nav-item').forEach((el) => el.classList.toggle('active', el.dataset.view === view));
-  $$('.topic-item').forEach((el) => el.classList.remove('active'));
   if (!view) $$('.nav-item').forEach((el) => el.classList.remove('active'));
+  if (view !== 'topic') $$('.topic-item').forEach((el) => el.classList.remove('active'));
 }
 
 function renderTopicNav() {
@@ -458,7 +591,9 @@ function openTopic(topic) {
   state.view = 'topic';
   $$('.nav-item').forEach((el) => el.classList.remove('active'));
   $$('.topic-item').forEach((el) => {
-    el.classList.toggle('active', el.dataset.topic && JSON.parse(el.dataset.topic).topic_id === topic.topic_id);
+    let d = null;
+    try { d = JSON.parse(el.dataset.topic); } catch { /* ignore */ }
+    el.classList.toggle('active', !!d && d.topic_id === topic.topic_id);
   });
   loadFeed({ reset: true, topic });
 }
@@ -493,7 +628,7 @@ function renderAccount() {
         <button class="btn-primary" id="acc-qr">扫码登录</button>
         <button class="btn-ghost" id="acc-cookie">用 Cookie</button>
       </div>
-      <p class="acc-hint">登录后可查看帖子详情、评论与搜索。</p>`;
+      <p class="acc-hint">登录后可查看帖子详情、评论与消息。</p>`;
     $('#acc-qr').onclick = openLogin;
     $('#acc-cookie').onclick = openSettings;
   }
@@ -507,6 +642,7 @@ async function refreshLoginState() {
   if (r && r.ok) {
     state.hasCookie = !!r.data.hasCookie;
     state.profile = r.data.profile || null;
+    state.captchaCooldownMs = r.data.captchaCooldownMs || 0;
   }
   renderAccount();
 }
@@ -689,7 +825,7 @@ function bindEvents() {
     if (!btn) return;
     const v = btn.dataset.view;
     if (v === 'feed') { state.currentTopic = null; state.view = 'feed'; setActiveNav('feed'); loadFeed({ reset: true }); }
-    else if (v === 'topics') { setActiveNav('topics'); renderTopicsView(); }
+    else if (v === 'topics') { renderTopicsView(); }
     else if (v === 'messages') { renderMessages(); }
   });
 
@@ -697,7 +833,7 @@ function bindEvents() {
   document.addEventListener('click', (e) => {
     const ti = e.target.closest('[data-topic]');
     if (ti) {
-      try { openTopic(JSON.parse(ti.dataset.topic)); } catch {}
+      try { openTopic(JSON.parse(ti.dataset.topic)); } catch { /* ignore */ }
       return;
     }
     const card = e.target.closest('.post-card[data-link]');
@@ -738,7 +874,7 @@ function bindEvents() {
     const tip = $('#cookie-tip');
     if (!val.trim()) { tip.className = 'modal-tip err'; tip.textContent = '请输入 Cookie 内容'; return; }
     const r = await window.heybox.config.setCookie(val);
-    if (r.ok) {
+    if (r && r.ok) {
       tip.className = 'modal-tip ok';
       tip.textContent = '已保存，正在校验登录态…';
       await refreshLoginState();
@@ -757,7 +893,7 @@ function bindEvents() {
       setTimeout(closeSettings, 1100);
     } else {
       tip.className = 'modal-tip err';
-      tip.textContent = '保存失败：' + (r.error || '未知错误');
+      tip.textContent = '保存失败：' + ((r && r.error) || '未知错误');
     }
   });
 
@@ -787,18 +923,28 @@ async function boot() {
 
   // 关于信息
   const info = await window.heybox.appInfo();
-  if (info.ok) {
+  if (info && info.ok && info.data) {
     $('#about-meta').innerHTML = `v${esc(info.data.version)} · Electron ${esc(info.data.electron)}<br/>数据接口由本地签名代理转发`;
   }
 
-  // 板块数据
+  // 板块数据：热门社区 + 推荐（未登录时 recommend 为空，自动退化为热门）
   const res = await window.heybox.api.categories();
   const payload = res && res.ok ? res.data : null;
   if (payload && payload.ok && payload.result) {
     const r = payload.result;
     const hot = (r.latest_hot_topics && r.latest_hot_topics.children) || [];
     const rec = (r.recommend_for_user_topics && r.recommend_for_user_topics.children) || [];
-    state.topics = [...rec, ...hot];
+    const sub = (r.subscribed_topics && r.subscribed_topics.children) || [];
+    const all = [...sub, ...rec, ...hot];
+    // 按 topic_id 去重，避免订阅板块和热门重复
+    const seen = new Set();
+    state.topics = all.filter((t) => {
+      if (!t || t.topic_id == null) return false;
+      const k = String(t.topic_id);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
   }
   renderTopicNav();
   renderHotList();

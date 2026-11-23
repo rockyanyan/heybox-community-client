@@ -24,16 +24,14 @@ const configPath = () => path.join(app.getPath('userData'), 'config.json');
 
 function loadConfig() {
   try {
-    const raw = fs.readFileSync(configPath(), 'utf8');
-    return JSON.parse(raw);
+    return JSON.parse(fs.readFileSync(configPath(), 'utf8'));
   } catch {
     return {};
   }
 }
 
 function saveConfig(patch) {
-  const cur = loadConfig();
-  const next = { ...cur, ...patch };
+  const next = { ...loadConfig(), ...patch };
   try {
     fs.mkdirSync(path.dirname(configPath()), { recursive: true });
     fs.writeFileSync(configPath(), JSON.stringify(next, null, 2), 'utf8');
@@ -46,7 +44,7 @@ function saveConfig(patch) {
 /* ------------------------- 图片代理协议 ------------------------- */
 
 // 允许的小黑盒图片域名（防盗链代理白名单）
-const IMG_HOSTS = ['.xiaoheihe.cn', '.max-c.com'];
+const IMG_HOSTS = ['.xiaoheihe.cn', '.max-c.com', '.akamai.steamstatic.com'];
 
 function isAllowedImage(urlStr) {
   try {
@@ -71,16 +69,19 @@ function registerImageProtocol() {
       if (!isAllowedImage(target)) return new Response('forbidden', { status: 403 });
       const res = await net.fetch(target, {
         headers: {
-          Referer: 'https://xiaoheihe.cn/',
+          Referer: 'https://www.xiaoheihe.cn/',
           'User-Agent': heybox.UA,
         },
       });
       const buf = Buffer.from(await res.arrayBuffer());
       return new Response(buf, {
         status: res.status,
-        headers: { 'Content-Type': res.headers.get('content-type') || 'image/jpeg' },
+        headers: {
+          'Content-Type': res.headers.get('content-type') || 'image/jpeg',
+          'Cache-Control': 'max-age=3600',
+        },
       });
-    } catch (e) {
+    } catch {
       return new Response('proxy error', { status: 502 });
     }
   });
@@ -135,8 +136,8 @@ function createWindow() {
 
 /* ------------------------- IPC ------------------------- */
 
-function ok(data) { return { ok: true, data }; }
-function fail(err) { return { ok: false, error: err?.message || String(err) }; }
+const ok = (data) => ({ ok: true, data });
+const fail = (err) => ({ ok: false, error: (err && err.message) || String(err) });
 
 function setupIpc() {
   const handle = (channel, fn) =>
@@ -157,14 +158,17 @@ function setupIpc() {
       hasCookie: !!(cfg.cookie && cfg.cookie.trim()),
       deviceId: heybox.getState().deviceId,
       profile: cfg.profile || null,
+      captchaCooldownMs: heybox.captchaCooldownRemainingMs(),
     };
   });
 
   handle('config:setCookie', ({ cookie }) => {
     const c = (cookie || '').trim();
     const hbId = heybox.extractHeyboxId(c);
-    saveConfig({ cookie: c, heyboxId: hbId || undefined, profile: c ? loadConfig().profile : null });
+    // 换了 Cookie 就把旧的资料缓存清掉，避免显示上一个账号
+    saveConfig({ cookie: c, heyboxId: hbId || '0', profile: c ? null : null });
     heybox.configure({ cookie: c, heyboxId: hbId || '0' });
+    heybox.resetCaptcha();
     return { hasCookie: !!c, heyboxId: hbId || '0' };
   });
 
@@ -191,6 +195,7 @@ function setupIpc() {
 
     saveConfig({ cookie: r.cookie, heyboxId: r.heyboxId, profile: r.profile || null });
     heybox.configure({ cookie: r.cookie, heyboxId: r.heyboxId });
+    heybox.resetCaptcha();
 
     // 用登录态立即验证 + 拉取最新资料；失败不影响登录，但把原因带给 UI
     let profile = r.profile || null;
@@ -218,16 +223,22 @@ function setupIpc() {
   handle('auth:logout', () => {
     saveConfig({ cookie: '', profile: null, heyboxId: '0' });
     heybox.configure({ cookie: '', heyboxId: '0' });
+    heybox.resetCaptcha();
     return { hasCookie: false };
   });
 
   // 业务接口
-  handle('api:feeds', ({ offset = 0, limit = 20, pull = 1 }) => heybox.getFeeds(offset, limit, pull));
+  handle('api:feeds', ({ offset = 0, limit = 20, pull = 0 }) => heybox.getFeeds(offset, limit, pull));
   handle('api:categories', () => heybox.getCategories());
   handle('api:topicFeeds', ({ topicId, offset = 0, limit = 20, sortType = 0 }) =>
     heybox.getTopicFeeds(topicId, offset, limit, sortType));
-  handle('api:linkTree', ({ linkId, offset = 0, limit = 20 }) => heybox.getLinkTree(linkId, offset, limit));
-  handle('api:search', ({ q, offset = 0, limit = 20 }) => heybox.search(q, offset, limit));
+  handle('api:linkTree', ({ linkId, page = 1, limit = 20, index = 1, ownerOnly = 0 }) =>
+    heybox.getLinkTree(linkId, { page, limit, index, ownerOnly }));
+  handle('api:search', ({ q, type = 'link', offset = 0, limit = 20 }) =>
+    heybox.search(q, { type, offset, limit }));
+  handle('api:searchTopics', ({ q, offset = 0, limit = 20 }) => heybox.searchTopics(q, offset, limit));
+  handle('api:messages', ({ listType = 0, offset = 0, limit = 20 } = {}) =>
+    heybox.getMessages({ listType, offset, limit }));
 
   // 打开外部链接
   handle('shell:open', ({ url }) => {
@@ -236,18 +247,18 @@ function setupIpc() {
   });
 
   // 窗口控制
-  ipcMain.handle('window:minimize', () => mainWindow?.minimize());
+  ipcMain.handle('window:minimize', () => mainWindow && mainWindow.minimize());
   ipcMain.handle('window:toggleMaximize', () => {
     if (!mainWindow) return false;
     if (mainWindow.isMaximized()) mainWindow.unmaximize();
     else mainWindow.maximize();
     return mainWindow.isMaximized();
   });
-  ipcMain.handle('window:close', () => mainWindow?.close());
-  ipcMain.handle('window:isMaximized', () => !!mainWindow?.isMaximized());
+  ipcMain.handle('window:close', () => mainWindow && mainWindow.close());
+  ipcMain.handle('window:isMaximized', () => !!(mainWindow && mainWindow.isMaximized()));
 
   // 直接请求（给前端做自定义接口用，仍走签名）
-  handle('api:raw', ({ path: p, params }) => heybox.request(p, params || {}));
+  handle('api:raw', ({ path: p, params, webVersion }) => heybox.request(p, params || {}, { webVersion }));
 }
 
 /* ------------------------- 启动 ------------------------- */

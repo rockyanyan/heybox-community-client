@@ -28,9 +28,12 @@ contextBridge.exposeInMainWorld('heybox', {
     categories: () => invoke('api:categories'),
     topicFeeds: (topicId, offset, limit, sortType) =>
       invoke('api:topicFeeds', { topicId, offset, limit, sortType }),
-    linkTree: (linkId, offset, limit) => invoke('api:linkTree', { linkId, offset, limit }),
-    search: (q, offset, limit) => invoke('api:search', { q, offset, limit }),
-    raw: (path, params) => invoke('api:raw', { path, params }),
+    linkTree: (linkId, page, limit, index, ownerOnly) =>
+      invoke('api:linkTree', { linkId, page, limit, index, ownerOnly }),
+    search: (q, type, offset, limit) => invoke('api:search', { q, type, offset, limit }),
+    searchTopics: (q, offset, limit) => invoke('api:searchTopics', { q, offset, limit }),
+    messages: (listType, offset, limit) => invoke('api:messages', { listType, offset, limit }),
+    raw: (path, params, webVersion) => invoke('api:raw', { path, params, webVersion }),
   },
 
   openExternal: (url) => invoke('shell:open', { url }),

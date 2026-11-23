@@ -1,6 +1,6 @@
 {
   "name": "heybox-desktop",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "小黑盒社区第三方桌面客户端",
   "main": "main.js",
   "author": "HeyBox Third-Party Client",
@@ -9,7 +9,11 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "web": "node server.js",
-    "build": "electron-builder --win --x64"
+    "build": "electron-builder --win --x64",
+    "test": "node test/client-test.js",
+    "test:qr": "node test/qr-login-test.js",
+    "test:ui": "node test/ui-check.js",
+    "test:flow": "node test/ui-flow.js"
   },
   "devDependencies": {
     "electron": "^33.2.0",

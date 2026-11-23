@@ -21,18 +21,20 @@
       body: JSON.stringify(body || {}),
     }).then((r) => r.json());
 
+  const get = (url) => fetch(url).then((r) => r.json());
+
   window.heybox = {
-    appInfo: () => fetch('/appinfo').then((r) => r.json()),
+    appInfo: () => get('/appinfo'),
 
     config: {
-      get: () => fetch('/config').then((r) => r.json()),
+      get: () => get('/config'),
       setCookie: (cookie) => post('/config/cookie', { cookie }),
     },
 
     auth: {
-      qrCreate: () => fetch('/auth/qr/create').then((r) => r.json()),
+      qrCreate: () => get('/auth/qr/create'),
       qrPoll: (token) => post('/auth/qr/poll', { token }),
-      profile: () => fetch('/auth/profile').then((r) => r.json()),
+      profile: () => get('/auth/profile'),
       logout: () => post('/auth/logout'),
     },
 
@@ -40,8 +42,11 @@
       feeds: (offset, limit, pull) => rpc('feeds', [offset, limit, pull]),
       categories: () => rpc('categories', []),
       topicFeeds: (topicId, offset, limit, sortType) => rpc('topicFeeds', [topicId, offset, limit, sortType]),
-      linkTree: (linkId, offset, limit) => rpc('linkTree', [linkId, offset, limit]),
-      search: (q, offset, limit) => rpc('search', [q, offset, limit]),
+      linkTree: (linkId, page, limit, index, ownerOnly) =>
+        rpc('linkTree', [linkId, { page, limit, index, ownerOnly }]),
+      search: (q, type, offset, limit) => rpc('search', [q, { type, offset, limit }]),
+      searchTopics: (q, offset, limit) => rpc('searchTopics', [q, offset, limit]),
+      messages: (listType, offset, limit) => rpc('messages', [{ listType, offset, limit }]),
       raw: () => Promise.resolve({ ok: false, error: '浏览器预览模式不支持该接口' }),
     },
 

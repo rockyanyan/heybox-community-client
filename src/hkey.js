@@ -5,6 +5,12 @@
  * 该算法通过对 路径 + 时间戳 + nonce 做字符集映射、交错混合后取 MD5，
  * 再由 MD5 前 5 位映射出 hkey 前缀、后 6 位经 Rijndael 变换求和得到 2 位校验码。
  * 仅使用 Node 内置 crypto，无第三方依赖。
+ *
+ * 已知测试向量（回归用）：
+ *   /account/data_report_web/ + 1770529394 + 3D6891C5FEBD5A0A4C986784D2F60E81 -> 3XX1P62
+ *
+ * 服务端对 _time 有 ±5 秒以上的容忍度（实测 now-5 ~ now+5 均通过），
+ * 因此本地时钟轻微偏差不会导致签名失败。
  */
 
 const { createHash } = require('node:crypto');
@@ -17,7 +23,7 @@ const dm = (e) => qm(Vm(e));
 const Ym = (e) => dm(qm(Vm(e)));
 const Gm = (e) => Ym(e) ^ dm(e) ^ qm(e);
 
-/** Rijndael 风格 4 字节混合变换，返回全部输入字节 */
+/** Rijndael 风格列混合：改写前 4 字节，其余字节原样保留 */
 function Km(eArr) {
   const e = eArr.slice();
   const t0 = Gm(e[0]) ^ Ym(e[1]) ^ dm(e[2]) ^ qm(e[3]);
@@ -43,7 +49,7 @@ function sv(str) {
   return r;
 }
 
-/** 归一化路径：/a/b/ -> /a/b/ */
+/** 归一化路径：/a/b -> /a/b/ */
 function normalizePath(pathname) {
   const parts = String(pathname).split('/').filter(Boolean);
   return '/' + parts.join('/') + '/';
@@ -59,8 +65,8 @@ function normalizePath(pathname) {
 function getHkey(pathname, timestamp, nonce) {
   const normalized = normalizePath(pathname);
   const comp1 = av(String(timestamp), -2); // 时间戳用前 34 位字符集
-  const comp2 = sv(normalized);             // 路径用完整字符集
-  const comp3 = sv(nonce);                  // nonce 用完整字符集
+  const comp2 = sv(normalized);            // 路径用完整字符集
+  const comp3 = sv(nonce);                 // nonce 用完整字符集
 
   const comps = [comp1, comp2, comp3];
   const maxLen = Math.max(comp1.length, comp2.length, comp3.length);
@@ -72,6 +78,7 @@ function getHkey(pathname, timestamp, nonce) {
   const md5 = createHash('md5').update(interleaved.slice(0, 20), 'utf8').digest('hex');
   const prefix = av(md5.slice(0, 5), -4); // MD5 前 5 位用前 32 位字符集
   const tail = md5.slice(-6).split('').map((c) => c.charCodeAt(0));
+  // 前 4 字节列混合后，连同尾部未参与混合的 2 字节一起求和（Km 返回全部 6 字节）
   const checksum = Km(tail).reduce((a, b) => a + b, 0) % 100;
 
   return prefix + String(checksum).padStart(2, '0');
@@ -105,4 +112,4 @@ function signUrl(inputUrl, opts = {}) {
   return u.toString();
 }
 
-module.exports = { getHkey, signUrl, randomNonce, randomDeviceId, CHARSET };
+module.exports = { getHkey, signUrl, randomNonce, randomDeviceId, normalizePath, CHARSET };

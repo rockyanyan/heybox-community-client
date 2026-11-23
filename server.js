@@ -37,7 +37,7 @@ const MIME = {
   '.ico': 'image/x-icon',
 };
 
-const IMG_HOSTS = ['.xiaoheihe.cn', '.max-c.com'];
+const IMG_HOSTS = ['.xiaoheihe.cn', '.max-c.com', '.akamai.steamstatic.com'];
 function isAllowedImage(u) {
   try {
     const p = new URL(u);
@@ -69,8 +69,10 @@ const server = http.createServer(async (req, res) => {
       feeds: () => heybox.getFeeds(args[0], args[1], args[2]),
       categories: () => heybox.getCategories(),
       topicFeeds: () => heybox.getTopicFeeds(args[0], args[1], args[2], args[3]),
-      linkTree: () => heybox.getLinkTree(args[0], args[1], args[2]),
-      search: () => heybox.search(args[0], args[1], args[2]),
+      linkTree: () => heybox.getLinkTree(args[0], args[1] || {}),
+      search: () => heybox.search(args[0], args[1] || {}),
+      searchTopics: () => heybox.searchTopics(args[0], args[1], args[2]),
+      messages: () => heybox.getMessages(args[0] || {}),
     };
     if (!table[fn]) return json(res, 404, { ok: false, error: 'unknown fn: ' + fn });
     try { return json(res, 200, { ok: true, data: await table[fn]() }); }
@@ -82,9 +84,14 @@ const server = http.createServer(async (req, res) => {
     const target = parsed.query.u;
     if (!target || !isAllowedImage(target)) { res.writeHead(403); return res.end('forbidden'); }
     try {
-      const r = await fetch(target, { headers: { Referer: 'https://xiaoheihe.cn/', 'User-Agent': heybox.UA } });
+      const r = await fetch(target, {
+        headers: { Referer: 'https://www.xiaoheihe.cn/', 'User-Agent': heybox.UA },
+      });
       const buf = Buffer.from(await r.arrayBuffer());
-      res.writeHead(r.status, { 'Content-Type': r.headers.get('content-type') || 'image/jpeg', 'Cache-Control': 'max-age=3600' });
+      res.writeHead(r.status, {
+        'Content-Type': r.headers.get('content-type') || 'image/jpeg',
+        'Cache-Control': 'max-age=3600',
+      });
       return res.end(buf);
     } catch { res.writeHead(502); return res.end('proxy error'); }
   }
@@ -98,6 +105,7 @@ const server = http.createServer(async (req, res) => {
         hasCookie: !!(c.cookie && c.cookie.trim()),
         deviceId: heybox.getState().deviceId,
         profile: c.profile || null,
+        captchaCooldownMs: heybox.captchaCooldownRemainingMs(),
       },
     });
   }
@@ -105,8 +113,9 @@ const server = http.createServer(async (req, res) => {
     const { cookie = '' } = await readBody(req);
     const c = (cookie || '').trim();
     const hbId = heybox.extractHeyboxId(c);
-    saveCfg({ cookie: c, heyboxId: hbId || '0', profile: c ? loadCfg().profile || null : null });
+    saveCfg({ cookie: c, heyboxId: hbId || '0', profile: null });
     heybox.configure({ cookie: c, heyboxId: hbId || '0' });
+    heybox.resetCaptcha();
     return json(res, 200, { ok: true, data: { hasCookie: !!c, heyboxId: hbId || '0' } });
   }
 
@@ -132,6 +141,7 @@ const server = http.createServer(async (req, res) => {
       if (r.state === 'succeeded') {
         saveCfg({ cookie: r.cookie, heyboxId: r.heyboxId, profile: r.profile || null });
         heybox.configure({ cookie: r.cookie, heyboxId: r.heyboxId });
+        heybox.resetCaptcha();
         let profile = r.profile || null;
         let warn = '';
         try {
@@ -158,6 +168,7 @@ const server = http.createServer(async (req, res) => {
   if (parsed.pathname === '/auth/logout' && req.method === 'POST') {
     saveCfg({ cookie: '', profile: null, heyboxId: '0' });
     heybox.configure({ cookie: '', heyboxId: '0' });
+    heybox.resetCaptcha();
     return json(res, 200, { ok: true, data: { hasCookie: false } });
   }
 
@@ -168,7 +179,7 @@ const server = http.createServer(async (req, res) => {
 
   /* ---- 静态文件 ---- */
   let file = parsed.pathname === '/' ? '/renderer/index.html' : parsed.pathname;
-  file = path.normalize(file).replace(/^(\.\.[\/\\])+/, '');
+  file = path.normalize(file).replace(/^(\.\.[/\\])+/, '');
   let full = path.join(ROOT, file);
   if (!full.startsWith(ROOT)) { res.writeHead(403); return res.end(); }
   // 兼容 /style.css 这类相对引用：回退到 renderer/ 目录
